@@ -1,5 +1,6 @@
 import { AutoDnsRefresh } from "@/components/dashboard/auto-dns-refresh"
 import { ClickToCopyText } from "@/components/dashboard/click-to-copy-text"
+import { EmailIdentityForm } from "@/components/dashboard/email-identity-form"
 import { FormSubmitButton } from "@/components/dashboard/form-submit-button"
 import { SetupUrlCleaner } from "@/components/dashboard/setup-url-cleaner"
 import { Badge } from "@/components/ui/badge"
@@ -10,7 +11,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { getDashboardContext } from "@/lib/dashboard-context"
 import {
   checkRequiredDnsRecords,
@@ -90,6 +90,17 @@ function deriveDomainFromEmail(value: string | null | undefined): string | null 
   return normalized.slice(atIndex + 1)
 }
 
+function deriveLocalPartFromEmail(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  const atIndex = normalized.lastIndexOf("@")
+
+  if (atIndex <= 0) {
+    return null
+  }
+
+  return normalized.slice(0, atIndex)
+}
+
 function normalizeDomainValue(value: string | null | undefined): string | null {
   const normalized = String(value ?? "").trim().toLowerCase()
 
@@ -108,7 +119,7 @@ function normalizeDomainValue(value: string | null | undefined): string | null {
   return withoutPort
 }
 
-function toMvpSendingDomain(value: string | null | undefined): string | null {
+function toSendingDomain(value: string | null | undefined): string | null {
   const normalized = normalizeDomainValue(value)
 
   if (!normalized) {
@@ -116,10 +127,6 @@ function toMvpSendingDomain(value: string | null | undefined): string | null {
   }
 
   return normalized.startsWith("mail.") ? normalized : `mail.${normalized}`
-}
-
-function buildMvpSender(domain: string | null | undefined): string {
-  return domain ? `xavo@${domain}` : ""
 }
 
 function normalizeHostName(value: string): string {
@@ -172,7 +179,8 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
   const settings = (settingsResponse.data ?? null) as OrganizationSettingsRow | null
 
   const senderReady = Boolean(inbox?.from_email)
-  const resolvedDomain = toMvpSendingDomain(inbox?.domain ?? deriveDomainFromEmail(inbox?.from_email))
+  const resolvedDomain = toSendingDomain(inbox?.domain ?? deriveDomainFromEmail(inbox?.from_email))
+  const senderLocalPart = deriveLocalPartFromEmail(inbox?.from_email) ?? "support"
   const domainReady = Boolean(resolvedDomain)
 
   const serviceConfigured = Boolean(getResendApiKey())
@@ -230,7 +238,6 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
   const requiredDnsComplete =
     dnsRequirementStatuses.length > 0 && dnsRequirementStatuses.every((entry) => entry.present)
   const missingRequiredDns = dnsRequirementStatuses.filter((entry) => !entry.present)
-  const senderPreview = buildMvpSender(resolvedDomain)
 
   return (
     <div className="space-y-6">
@@ -267,60 +274,16 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
           <CardHeader>
             <CardTitle>Email identity</CardTitle>
             <CardDescription>
-              For MVP, sender is fixed to <code>xavo@&lt;sending-domain&gt;</code>.
+              This is the email address your customers will receive messages from.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form action={saveSetupConfigAction} className="grid gap-3 md:grid-cols-2">
-              <input type="hidden" name="provider" value="resend" />
-
-              <div className="space-y-1.5">
-                <label htmlFor="from_email" className="text-sm font-medium">
-                  Sender email
-                </label>
-                <Input
-                  id="from_email"
-                  name="from_email"
-                  type="email"
-                  readOnly
-                  placeholder="xavo@mail.yourdomain.com"
-                  defaultValue={inbox?.from_email ?? senderPreview}
-                />
-                <p className="text-xs text-muted-foreground">Auto-managed by setup.</p>
-              </div>
-
-              <div className="space-y-1.5">
-                <label htmlFor="domain" className="text-sm font-medium">
-                  Sending domain
-                </label>
-                <Input
-                  id="domain"
-                  name="domain"
-                  placeholder="startily.io"
-                  defaultValue={resolvedDomain ?? ""}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Enter your base domain (for example, <code>startily.io</code>). We normalize it to{" "}
-                  <code>mail.&lt;base-domain&gt;</code>.
-                </p>
-              </div>
-
-              <div className="space-y-1.5 md:col-span-2">
-                <label htmlFor="website_url" className="text-sm font-medium">
-                  Website URL
-                </label>
-                <Input
-                  id="website_url"
-                  name="website_url"
-                  placeholder="https://yourdomain.com"
-                  defaultValue={settings?.website_url ?? ""}
-                />
-              </div>
-
-              <div className="md:col-span-2 flex items-center justify-end gap-2">
-                <FormSubmitButton idleLabel="Save setup" loadingLabel="Saving..." />
-              </div>
-            </form>
+            <EmailIdentityForm
+              action={saveSetupConfigAction}
+              initialFromEmail={inbox?.from_email ?? null}
+              initialDomain={resolvedDomain ?? null}
+              initialWebsiteUrl={settings?.website_url ?? null}
+            />
           </CardContent>
         </Card>
 
@@ -407,6 +370,7 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
                 <form action={syncResendDomainAction} className="space-y-2 rounded-md border bg-background p-3">
                   <input type="hidden" name="domain" value={resolvedDomain ?? ""} />
                   <input type="hidden" name="from_email" value={inbox?.from_email ?? ""} />
+                  <input type="hidden" name="sender_local_part" value={senderLocalPart} />
                   <p className="text-xs text-muted-foreground">
                     Connect domain after setup is saved. We will validate fields before continuing.
                   </p>
@@ -423,6 +387,8 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
                   className="space-y-2 rounded-md border bg-background p-3"
                 >
                   <input type="hidden" name="domain" value={resolvedDomain ?? ""} />
+                  <input type="hidden" name="from_email" value={inbox?.from_email ?? ""} />
+                  <input type="hidden" name="sender_local_part" value={senderLocalPart} />
                   <p className="text-xs text-muted-foreground">
                     Run a DNS verification check now. DNS propagation can take a few minutes
                     (sometimes longer).

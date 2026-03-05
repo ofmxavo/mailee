@@ -43,8 +43,6 @@ type ParentMessageRecord = {
   references: string[]
 }
 
-const MVP_SENDER_LOCAL_PART = "xavo"
-
 function jsonError(message: string, status = 400) {
   return NextResponse.json(
     {
@@ -86,10 +84,6 @@ function deriveDomainFromEmail(value: string | null | undefined): string | null 
   }
 
   return normalizeDomain(normalized.slice(atIndex + 1))
-}
-
-function buildMvpFromEmail(domain: string): string {
-  return `${MVP_SENDER_LOCAL_PART}@${domain}`
 }
 
 export async function POST(request: Request) {
@@ -266,17 +260,6 @@ export async function POST(request: Request) {
       "Sender email domain must exactly match the connected sending domain. Update setup first.",
       409
     )
-  }
-
-  if (inboxDomain) {
-    const expectedFromEmail = buildMvpFromEmail(inboxDomain)
-
-    if (fromEmail.trim().toLowerCase() !== expectedFromEmail) {
-      return jsonError(
-        `Sender email must be ${expectedFromEmail} for MVP. Update setup first.`,
-        409
-      )
-    }
   }
 
   const fromHeader = typedInbox.from_name

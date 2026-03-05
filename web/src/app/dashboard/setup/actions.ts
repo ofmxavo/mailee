@@ -29,7 +29,7 @@ const REQUIRED_WEBHOOK_EVENTS = [
   "email.complained",
 ]
 
-const MVP_SENDER_LOCAL_PART = "xavo"
+const DEFAULT_SENDER_LOCAL_PART = "support"
 
 function redirectWithNotice(
   type: "success" | "error" | "warning",
@@ -75,12 +75,93 @@ function deriveDomainFromEmail(value: string | null | undefined): string | null 
   return normalizeDomainValue(normalized.slice(atIndex + 1))
 }
 
-function toMvpSendingDomain(value: string): string {
+function deriveLocalPartFromEmail(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim().toLowerCase()
+  const atIndex = normalized.lastIndexOf("@")
+
+  if (atIndex <= 0) {
+    return null
+  }
+
+  const localPart = normalized.slice(0, atIndex).trim()
+  return localPart.length > 0 ? localPart : null
+}
+
+function normalizeSenderLocalPart(value: string | null | undefined): string | null {
+  const normalized = String(value ?? "").trim().toLowerCase()
+
+  if (!normalized) {
+    return null
+  }
+
+  const localOnly = normalized.includes("@") ? normalized.split("@")[0] : normalized
+  const compact = localOnly.replace(/\s+/g, "")
+
+  return compact.length > 0 ? compact : null
+}
+
+function isValidSenderLocalPart(value: string): boolean {
+  return /^[a-z0-9][a-z0-9._+-]{0,62}$/.test(value)
+}
+
+function toSendingDomain(value: string): string {
   return value.startsWith("mail.") ? value : `mail.${value}`
 }
 
-function buildMvpFromEmail(domain: string): string {
-  return `${MVP_SENDER_LOCAL_PART}@${domain}`
+function buildFromEmail(localPart: string, sendingDomain: string): string {
+  return `${localPart}@${sendingDomain}`
+}
+
+function resolveSenderAndDomainFromForm(params: {
+  formData: FormData
+  fallbackFrom: string
+  requireDomain: boolean
+}): {
+  domainInputRaw: string | null
+  fromEmailInput: string | null
+  senderLocalPart: string
+  sendingDomain: string
+  resolvedFromEmail: string
+} {
+  const { formData, fallbackFrom, requireDomain } = params
+
+  const domainInputRaw = normalizeDomainValue(toNullableTrimmed(formData.get("domain")))
+  const fromEmailInput = toNullableTrimmed(formData.get("from_email"))
+  const senderLocalPartInput = normalizeSenderLocalPart(
+    toNullableTrimmed(formData.get("sender_local_part"))
+  )
+
+  if (requireDomain && !domainInputRaw) {
+    throw new Error("Add a valid sending domain first.")
+  }
+
+  const fallbackDomain = deriveDomainFromEmail(fallbackFrom)
+  const domainSeed = domainInputRaw ?? deriveDomainFromEmail(fromEmailInput) ?? fallbackDomain
+
+  if (!domainSeed) {
+    throw new Error("Add a valid sending domain before continuing.")
+  }
+
+  const sendingDomain = toSendingDomain(domainSeed)
+  const senderLocalPart =
+    senderLocalPartInput ??
+    deriveLocalPartFromEmail(fromEmailInput) ??
+    deriveLocalPartFromEmail(fallbackFrom) ??
+    DEFAULT_SENDER_LOCAL_PART
+
+  if (!isValidSenderLocalPart(senderLocalPart)) {
+    throw new Error(
+      "Enter a valid sender email name using letters, numbers, dot, underscore, plus, or dash."
+    )
+  }
+
+  return {
+    domainInputRaw,
+    fromEmailInput,
+    senderLocalPart,
+    sendingDomain,
+    resolvedFromEmail: buildFromEmail(senderLocalPart, sendingDomain),
+  }
 }
 
 async function resolveDefaultInboxIds() {
@@ -106,15 +187,9 @@ export async function saveSetupConfigAction(formData: FormData) {
   const { supabase, organization } = await getDashboardContext()
 
   const provider = String(formData.get("provider") ?? "resend").trim().toLowerCase()
-  const fromEmail = toNullableTrimmed(formData.get("from_email"))
-  const domainFromInputRaw = normalizeDomainValue(toNullableTrimmed(formData.get("domain")))
-  const domainFromInput = domainFromInputRaw ? toMvpSendingDomain(domainFromInputRaw) : null
   const websiteUrl = toNullableTrimmed(formData.get("website_url"))
 
-  if (![
-    "manual",
-    "resend",
-  ].includes(provider)) {
+  if (!["manual", "resend"].includes(provider)) {
     redirectWithNotice("error", "Invalid provider.")
   }
 
@@ -128,27 +203,29 @@ export async function saveSetupConfigAction(formData: FormData) {
     const agentId = await ensureDefaultAgentId(supabase, organization.id)
     const inboxId = await ensureDefaultInboxId(supabase, organization.id, agentId)
 
-    const fallbackFrom = getMailFromFallback() ?? `concierge+${organization.id.slice(0, 8)}@mailee.local`
-    const fallbackDomain = deriveDomainFromEmail(fallbackFrom) ?? "mailee.local"
-    const resolvedDomain = toMvpSendingDomain(
-      domainFromInput ?? deriveDomainFromEmail(fromEmail) ?? fallbackDomain
-    )
-    const resolvedFromEmail = buildMvpFromEmail(resolvedDomain)
+    const fallbackFrom =
+      getMailFromFallback() ?? `concierge+${organization.id.slice(0, 8)}@mailee.local`
 
-    if (domainFromInputRaw && domainFromInputRaw !== resolvedDomain) {
-      notices.push(`Sending domain normalized to ${resolvedDomain}.`)
+    const resolved = resolveSenderAndDomainFromForm({
+      formData,
+      fallbackFrom,
+      requireDomain: true,
+    })
+
+    if (resolved.domainInputRaw && resolved.domainInputRaw !== resolved.sendingDomain) {
+      notices.push(`Sending domain normalized to ${resolved.sendingDomain}.`)
     }
 
-    if (fromEmail && fromEmail.trim().toLowerCase() !== resolvedFromEmail) {
-      notices.push(`Sender email set to ${resolvedFromEmail} for MVP.`)
+    if (resolved.fromEmailInput && resolved.fromEmailInput.toLowerCase() !== resolved.resolvedFromEmail) {
+      notices.push(`Sender email set to ${resolved.resolvedFromEmail}.`)
     }
 
     const { error: inboxError } = await supabase
       .from("inboxes")
       .update({
         provider,
-        from_email: resolvedFromEmail,
-        domain: resolvedDomain,
+        from_email: resolved.resolvedFromEmail,
+        domain: resolved.sendingDomain,
       })
       .eq("id", inboxId)
       .eq("organization_id", organization.id)
@@ -182,11 +259,7 @@ export async function saveSetupConfigAction(formData: FormData) {
 
     revalidatePath("/dashboard/setup")
 
-    const message =
-      notices.length > 0
-        ? `Setup saved. ${notices.join(" ")} MVP sender pattern is locked to xavo@<sending-domain>.`
-        : "Setup saved. MVP sender pattern is locked to xavo@<sending-domain>."
-
+    const message = notices.length > 0 ? `Setup saved. ${notices.join(" ")}` : "Setup saved."
     redirectWithNotice("success", message)
   } catch (error) {
     if (isRedirectError(error)) {
@@ -208,23 +281,18 @@ export async function syncResendDomainAction(formData: FormData) {
   try {
     const { supabase, organizationId, inboxId } = await resolveDefaultInboxIds()
 
-    const domainInputRaw = normalizeDomainValue(toNullableTrimmed(formData.get("domain")))
-    const fromEmail = toNullableTrimmed(formData.get("from_email"))
+    const fallbackFrom =
+      getMailFromFallback() ?? `concierge+${organizationId.slice(0, 8)}@mailee.local`
 
-    if (!domainInputRaw) {
-      redirectWithNotice(
-        "error",
-        "Add sending domain and save setup before connecting.",
-        "connect"
-      )
-    }
-
-    const domainInput = toMvpSendingDomain(domainInputRaw)
-    const expectedFromEmail = buildMvpFromEmail(domainInput)
+    const resolved = resolveSenderAndDomainFromForm({
+      formData,
+      fallbackFrom,
+      requireDomain: true,
+    })
 
     const connectedDomain = await upsertResendDomain({
       apiKey: resendApiKey,
-      domainName: domainInput,
+      domainName: resolved.sendingDomain,
     })
 
     await verifyResendDomain({
@@ -242,8 +310,8 @@ export async function syncResendDomainAction(formData: FormData) {
     const { error: updateError } = await supabase
       .from("inboxes")
       .update({
-        from_email: expectedFromEmail,
-        domain: domainInput,
+        from_email: resolved.resolvedFromEmail,
+        domain: resolved.sendingDomain,
         domain_status: mappedStatus,
       })
       .eq("id", inboxId)
@@ -263,12 +331,12 @@ export async function syncResendDomainAction(formData: FormData) {
 
     const notices: string[] = []
 
-    if (domainInputRaw !== domainInput) {
-      notices.push(`Domain normalized to ${domainInput}.`)
+    if (resolved.domainInputRaw && resolved.domainInputRaw !== resolved.sendingDomain) {
+      notices.push(`Domain normalized to ${resolved.sendingDomain}.`)
     }
 
-    if (fromEmail && fromEmail.trim().toLowerCase() !== expectedFromEmail) {
-      notices.push(`Sender email set to ${expectedFromEmail}.`)
+    if (resolved.fromEmailInput && resolved.fromEmailInput.toLowerCase() !== resolved.resolvedFromEmail) {
+      notices.push(`Sender email set to ${resolved.resolvedFromEmail}.`)
     }
 
     const statusMessage =
@@ -299,17 +367,18 @@ export async function refreshResendDomainStatusAction(formData: FormData) {
   try {
     const { supabase, organizationId, inboxId } = await resolveDefaultInboxIds()
 
-    const domainInputRaw = normalizeDomainValue(toNullableTrimmed(formData.get("domain")))
+    const fallbackFrom =
+      getMailFromFallback() ?? `concierge+${organizationId.slice(0, 8)}@mailee.local`
 
-    if (!domainInputRaw) {
-      redirectWithNotice("error", "Add a valid domain first.", "connect")
-    }
-
-    const domainInput = toMvpSendingDomain(domainInputRaw)
+    const resolved = resolveSenderAndDomainFromForm({
+      formData,
+      fallbackFrom,
+      requireDomain: true,
+    })
 
     const existingDomain = await findResendDomainByName({
       apiKey: resendApiKey,
-      domainName: domainInput,
+      domainName: resolved.sendingDomain,
     })
 
     if (!existingDomain) {
@@ -331,8 +400,8 @@ export async function refreshResendDomainStatusAction(formData: FormData) {
     const { error: updateError } = await supabase
       .from("inboxes")
       .update({
-        from_email: buildMvpFromEmail(domainInput),
-        domain: domainInput,
+        from_email: resolved.resolvedFromEmail,
+        domain: resolved.sendingDomain,
         domain_status: mappedStatus,
       })
       .eq("id", inboxId)
