@@ -88,12 +88,40 @@ function sortInboxes(a: InboxRecord, b: InboxRecord): number {
   return a.created_at.localeCompare(b.created_at)
 }
 
+function parseEmailParts(email: string): { localPart: string; domain: string } | null {
+  const normalized = String(email ?? "").trim().toLowerCase()
+  const [localPartRaw, domainRaw] = normalized.split("@")
+
+  if (!localPartRaw || !domainRaw) {
+    return null
+  }
+
+  return {
+    localPart: localPartRaw,
+    domain: domainRaw,
+  }
+}
+
+function normalizeLocalPartForMatch(localPart: string): string {
+  const normalized = localPart.trim().toLowerCase()
+  const plusIndex = normalized.indexOf("+")
+
+  if (plusIndex <= 0) {
+    return normalized
+  }
+
+  return normalized.slice(0, plusIndex)
+}
+
 function pickInbox(inboxes: InboxRecord[], recipientEmails: string[]): InboxRecord | null {
   if (inboxes.length === 0 || recipientEmails.length === 0) {
     return null
   }
 
   const normalizedRecipients = recipientEmails.map((entry) => entry.toLowerCase())
+  const recipientParts = normalizedRecipients
+    .map((entry) => parseEmailParts(entry))
+    .filter((entry): entry is { localPart: string; domain: string } => Boolean(entry))
   const domains = extractDomains(normalizedRecipients)
 
   const exactMatches = inboxes.filter((inbox) => {
@@ -106,8 +134,41 @@ function pickInbox(inboxes: InboxRecord[], recipientEmails: string[]): InboxReco
     )
   })
 
-  if (exactMatches.length > 0) {
+  if (exactMatches.length > 1) {
+    return null
+  }
+
+  if (exactMatches.length === 1) {
     return exactMatches.sort(sortInboxes)[0] ?? null
+  }
+
+  const localPartMatches = inboxes.filter((inbox) => {
+    const inboxFromParts = parseEmailParts(inbox.from_email)
+    const inboxReplyToParts = inbox.reply_to_email ? parseEmailParts(inbox.reply_to_email) : null
+
+    return recipientParts.some((recipient) => {
+      const recipientLocalPart = normalizeLocalPartForMatch(recipient.localPart)
+
+      const fromMatch =
+        inboxFromParts &&
+        inboxFromParts.domain === recipient.domain &&
+        normalizeLocalPartForMatch(inboxFromParts.localPart) === recipientLocalPart
+
+      const replyToMatch =
+        inboxReplyToParts &&
+        inboxReplyToParts.domain === recipient.domain &&
+        normalizeLocalPartForMatch(inboxReplyToParts.localPart) === recipientLocalPart
+
+      return Boolean(fromMatch || replyToMatch)
+    })
+  })
+
+  if (localPartMatches.length > 1) {
+    return null
+  }
+
+  if (localPartMatches.length === 1) {
+    return localPartMatches.sort(sortInboxes)[0] ?? null
   }
 
   const domainMatches = inboxes.filter((inbox) => {
@@ -115,7 +176,11 @@ function pickInbox(inboxes: InboxRecord[], recipientEmails: string[]): InboxReco
     return Boolean(domain && domains.includes(domain))
   })
 
-  if (domainMatches.length > 0) {
+  if (domainMatches.length > 1) {
+    return null
+  }
+
+  if (domainMatches.length === 1) {
     return domainMatches.sort(sortInboxes)[0] ?? null
   }
 

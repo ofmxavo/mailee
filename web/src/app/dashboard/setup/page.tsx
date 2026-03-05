@@ -18,13 +18,14 @@ import {
   type DnsConflict,
   type DnsRequirementStatus,
 } from "@/lib/dns-diagnostics"
-import { getResendApiKey } from "@/lib/env"
+import { getResendApiKey, getResendWebhookSecret } from "@/lib/env"
 import { findResendDomainByName, type ResendDomain } from "@/lib/resend"
 
 import {
   refreshResendDomainStatusAction,
   saveSetupConfigAction,
   syncResendDomainAction,
+  syncResendWebhookAction,
 } from "./actions"
 
 type SetupPageProps = {
@@ -202,6 +203,7 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
   const domainReady = Boolean(resolvedDomain)
 
   const serviceConfigured = Boolean(getResendApiKey())
+  const webhookSecretConfigured = Boolean(getResendWebhookSecret())
 
   let providerDomain: ResendDomain | null = null
   let providerDomainError: string | null = null
@@ -237,6 +239,8 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
 
   const dnsVerified =
     inbox?.domain_status === "verified" || providerDomain?.status?.toLowerCase() === "verified"
+  const outboundReady = serviceConfigured && senderReady && domainReady && dnsVerified
+  const inboundReady = outboundReady && webhookSecretConfigured
 
   const dnsRecords = providerDomain?.records ?? []
   const pendingRecords = dnsRecords.filter(
@@ -333,10 +337,16 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
             <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
               <span>Inbound replies</span>
               <Badge
-                variant={dnsVerified ? "default" : "outline"}
-                className={dnsVerified ? undefined : getPendingBadgeClass()}
+                variant={inboundReady ? "default" : "outline"}
+                className={inboundReady ? undefined : getPendingBadgeClass()}
               >
-                {dnsVerified ? "ready" : "pending"}
+                {inboundReady ? "ready" : "pending"}
+              </Badge>
+            </div>
+            <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+              <span>Webhook secret configured</span>
+              <Badge variant={getStatusLabel(webhookSecretConfigured)}>
+                {webhookSecretConfigured ? "ready" : "missing"}
               </Badge>
             </div>
           </CardContent>
@@ -384,6 +394,13 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
             </div>
           ) : (
             <>
+              {!webhookSecretConfigured && (
+                <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                  <code>RESEND_WEBHOOK_SECRET</code> is missing. Sending can still work, but inbound
+                  reply capture will fail until this is configured.
+                </p>
+              )}
+
               <div className="grid gap-3 lg:grid-cols-[2fr_1fr]">
                 <form action={syncResendDomainAction} className="space-y-2 rounded-md border bg-background p-3">
                   <input type="hidden" name="domain" value={resolvedDomain ?? ""} />
@@ -421,6 +438,29 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
               </div>
 
               <AutoDnsRefresh enabled={!dnsVerified && Boolean(providerDomain)} intervalSeconds={20} />
+
+              {dnsVerified && (
+                <div className="space-y-2 rounded-md border border-emerald-400/60 bg-emerald-50 p-3 text-xs text-emerald-700">
+                  <p className="font-medium">
+                    Sending is ready for <code>{inbox?.from_email ?? resolvedDomain}</code>.
+                  </p>
+                  <p>
+                    Inbound replies are{" "}
+                    <strong>{inboundReady ? "ready" : "not fully ready yet"}</strong>.
+                    {inboundReady
+                      ? " Reply to any outbound message and it should appear in Inbox within ~30-90 seconds."
+                      : " Configure webhook secret and sync inbound routing to finish setup."}
+                  </p>
+                  <form action={syncResendWebhookAction}>
+                    <FormSubmitButton
+                      idleLabel="Sync inbound routing"
+                      loadingLabel="Syncing inbound..."
+                      variant="outline"
+                      className="h-8"
+                    />
+                  </form>
+                </div>
+              )}
 
               {providerDomainError && (
                 <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive">

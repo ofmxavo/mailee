@@ -1,5 +1,6 @@
 import Link from "next/link"
 
+import { AutoInboxRefresh } from "@/components/dashboard/auto-inbox-refresh"
 import { ComposeMessageForm } from "@/components/dashboard/compose-message-form"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -145,6 +146,8 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
           {error ?? success}
         </p>
       )}
+
+      <AutoInboxRefresh enabled={Boolean(activeConversation)} intervalSeconds={15} />
 
       <Card>
         <CardHeader>

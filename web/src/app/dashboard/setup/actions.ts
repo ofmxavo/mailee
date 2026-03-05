@@ -9,12 +9,14 @@ import {
   ensureDefaultAgentId,
   ensureDefaultInboxId,
 } from "@/lib/dashboard-defaults"
+import { checkRequiredDnsRecords, findDnsConflicts } from "@/lib/dns-diagnostics"
 import { getMailFromFallback, getResendApiKey } from "@/lib/env"
 import {
   ensureResendWebhook,
   findResendDomainByName,
   getResendDomain,
   mapDomainStatusForInbox,
+  type ResendDomain,
   upsertResendDomain,
   verifyResendDomain,
 } from "@/lib/resend"
@@ -183,6 +185,62 @@ async function ensureInboundWebhook(apiKey: string) {
   })
 }
 
+function pluralize(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural
+}
+
+async function summarizePendingDnsState(domain: ResendDomain): Promise<string | null> {
+  if (!domain.records || domain.records.length === 0) {
+    return "Add the required DNS records shown below, then check status again."
+  }
+
+  try {
+    const [conflicts, requirements] = await Promise.all([
+      findDnsConflicts({
+        domainName: domain.name,
+        records: domain.records,
+      }),
+      checkRequiredDnsRecords({
+        domainName: domain.name,
+        records: domain.records,
+      }),
+    ])
+
+    const missingCount = requirements.filter((entry) => !entry.present).length
+    const conflictCount = conflicts.length
+    const highRiskConflictCount = conflicts.filter((entry) => entry.risk === "high").length
+
+    if (missingCount === 0 && conflictCount === 0) {
+      return "All required DNS records are live. Resend provider verification can still take 5-20 minutes."
+    }
+
+    const pieces: string[] = []
+
+    if (missingCount > 0) {
+      pieces.push(
+        `Missing ${missingCount} required DNS ${pluralize(missingCount, "record", "records")}.`
+      )
+    }
+
+    if (conflictCount > 0) {
+      pieces.push(
+        `Remove ${conflictCount} conflicting DNS ${pluralize(conflictCount, "record", "records")}.`
+      )
+    }
+
+    if (highRiskConflictCount > 0) {
+      pieces.push(
+        `${highRiskConflictCount} ${pluralize(highRiskConflictCount, "change is", "changes are")} high risk and may impact existing mailbox delivery.`
+      )
+    }
+
+    pieces.push('After DNS updates, click "Check DNS status" again.')
+    return pieces.join(" ")
+  } catch {
+    return "DNS checks are still in progress. Wait a few minutes and check status again."
+  }
+}
+
 export async function saveSetupConfigAction(formData: FormData) {
   const { supabase, organization } = await getDashboardContext()
 
@@ -339,10 +397,13 @@ export async function syncResendDomainAction(formData: FormData) {
       notices.push(`Sender email set to ${resolved.resolvedFromEmail}.`)
     }
 
+    const pendingDnsMessage =
+      mappedStatus === "verified" ? null : await summarizePendingDnsState(resendDomain)
+
     const statusMessage =
       mappedStatus === "verified"
-        ? "Domain connected and DNS verified."
-        : "Domain connected. Add the DNS records below to finish verification."
+        ? "Domain connected and DNS verified. Inbound replies are ready."
+        : `Domain connected. ${pendingDnsMessage ?? "Add the DNS records below to finish verification."}`
 
     const message = `${notices.join(" ")} ${statusMessage}`.trim()
 
@@ -417,12 +478,15 @@ export async function refreshResendDomainStatusAction(formData: FormData) {
 
     await ensureInboundWebhook(resendApiKey)
 
+    const pendingDnsMessage =
+      mappedStatus === "verified" ? null : await summarizePendingDnsState(resendDomain)
+
     revalidatePath("/dashboard/setup")
     redirectWithNotice(
       mappedStatus === "verified" ? "success" : "warning",
       mappedStatus === "verified"
         ? "DNS verified. Inbound replies are ready."
-        : "Still pending DNS verification. DNS propagation or provider verification may still be in progress.",
+        : `Still pending DNS verification. ${pendingDnsMessage ?? "DNS propagation or provider verification may still be in progress."}`,
       "connect"
     )
   } catch (error) {

@@ -3,16 +3,15 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 
-export function AutoDnsRefresh({
+export function AutoInboxRefresh({
   enabled,
-  intervalSeconds = 20,
+  intervalSeconds = 15,
 }: {
   enabled: boolean
   intervalSeconds?: number
 }) {
   const router = useRouter()
   const [secondsUntilRefresh, setSecondsUntilRefresh] = useState(intervalSeconds)
-  const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null)
 
   useEffect(() => {
     setSecondsUntilRefresh(intervalSeconds)
@@ -25,7 +24,6 @@ export function AutoDnsRefresh({
 
     const refreshTimer = window.setInterval(() => {
       router.refresh()
-      setLastRefreshAt(new Date())
     }, intervalSeconds * 1000)
 
     const countdownTimer = window.setInterval(() => {
@@ -49,24 +47,8 @@ export function AutoDnsRefresh({
   }
 
   return (
-    <div className="rounded-md border border-amber-400/70 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span>
-          Auto-refresh is active. Next check in {secondsUntilRefresh}s.
-          {lastRefreshAt ? ` Last checked at ${lastRefreshAt.toLocaleTimeString()}.` : ""}
-        </span>
-        <button
-          type="button"
-          className="rounded-md border border-amber-500/60 bg-background px-2 py-1 text-[11px] font-medium text-amber-900"
-          onClick={() => {
-            router.refresh()
-            setLastRefreshAt(new Date())
-            setSecondsUntilRefresh(intervalSeconds)
-          }}
-        >
-          Refresh now
-        </button>
-      </div>
+    <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      Auto-refreshing this inbox every {intervalSeconds}s. Next refresh in {secondsUntilRefresh}s.
     </div>
   )
 }
