@@ -39,7 +39,7 @@ function redirectWithNotice(
   scope: "page" | "connect" = "page"
 ): never {
   redirect(
-    `/dashboard/setup?${type}=${encodeURIComponent(message)}&scope=${encodeURIComponent(scope)}`
+    `/dashboard/email?${type}=${encodeURIComponent(message)}&scope=${encodeURIComponent(scope)}`
   )
 }
 
@@ -315,7 +315,7 @@ export async function saveSetupConfigAction(formData: FormData) {
       }
     }
 
-    revalidatePath("/dashboard/setup")
+    revalidatePath("/dashboard/email")
 
     const message = notices.length > 0 ? `Setup saved. ${notices.join(" ")}` : "Setup saved."
     redirectWithNotice("success", message)
@@ -385,7 +385,7 @@ export async function syncResendDomainAction(formData: FormData) {
 
     await ensureInboundWebhook(resendApiKey)
 
-    revalidatePath("/dashboard/setup")
+    revalidatePath("/dashboard/email")
 
     const notices: string[] = []
 
@@ -481,7 +481,7 @@ export async function refreshResendDomainStatusAction(formData: FormData) {
     const pendingDnsMessage =
       mappedStatus === "verified" ? null : await summarizePendingDnsState(resendDomain)
 
-    revalidatePath("/dashboard/setup")
+    revalidatePath("/dashboard/email")
     redirectWithNotice(
       mappedStatus === "verified" ? "success" : "warning",
       mappedStatus === "verified"
@@ -510,7 +510,7 @@ export async function syncResendWebhookAction() {
     await getDashboardContext()
     await ensureInboundWebhook(resendApiKey)
 
-    revalidatePath("/dashboard/setup")
+    revalidatePath("/dashboard/email")
     redirectWithNotice("success", "Inbound reply routing synced.", "connect")
   } catch (error) {
     if (isRedirectError(error)) {

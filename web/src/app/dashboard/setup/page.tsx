@@ -265,7 +265,7 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
     <div className="space-y-6">
       <SetupUrlCleaner />
       <header className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight">Setup</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Email</h1>
         <p className="text-sm text-muted-foreground">
           Configure sender identity and connect your domain for outbound + inbound email.
         </p>

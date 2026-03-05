@@ -8,6 +8,7 @@ import {
   Settings,
   Settings2,
   Sparkles,
+  Users,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -26,13 +27,18 @@ const navItems = [
     icon: Inbox,
   },
   {
+    href: "/dashboard/users",
+    label: "Users",
+    icon: Users,
+  },
+  {
     href: "/dashboard/personality",
     label: "Personality",
     icon: Sparkles,
   },
   {
-    href: "/dashboard/setup",
-    label: "Setup",
+    href: "/dashboard/email",
+    label: "Email",
     icon: Settings2,
   },
   {
