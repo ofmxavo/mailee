@@ -2,6 +2,11 @@ import { NextResponse } from "next/server"
 
 export const runtime = "nodejs"
 
+import {
+  AUTOMATION_DAILY_SEND_LIMIT,
+  buildBasicAutoReplyText,
+  isAutomationActive,
+} from "@/lib/automation"
 import { ensureDefaultAgentId } from "@/lib/dashboard-defaults"
 import { getResendApiKey, getResendWebhookSecret } from "@/lib/env"
 import {
@@ -13,6 +18,7 @@ import {
   parseEmailAddress,
   parseMessageIdList,
   retrieveReceivedEmailFromResend,
+  sendEmailWithResend,
   verifyResendWebhookSignature,
 } from "@/lib/resend"
 import { getSupabaseAdminClient } from "@/lib/supabase/admin"
@@ -34,9 +40,11 @@ type InboxRecord = {
   id: string
   organization_id: string
   agent_id: string | null
+  from_name: string | null
   from_email: string
   reply_to_email: string | null
   domain: string | null
+  domain_status: string
   is_default: boolean
   created_at: string
 }
@@ -50,10 +58,18 @@ type ConversationRecord = {
   id: string
   agent_id: string
   subject: string
+  ai_mode: "draft" | "auto"
+  replies_paused: boolean
 }
 
 type MessageRecord = {
   id: string
+}
+
+type OrganizationSettingsRow = {
+  default_ai_mode: "draft" | "auto" | null
+  reply_style: string | null
+  company_summary: string | null
 }
 
 function jsonReply(payload: unknown, status = 200) {
@@ -68,6 +84,11 @@ function normalizeConversationSubject(subject: string | null | undefined): strin
   }
 
   return trimmed.length > 200 ? trimmed.slice(0, 200) : trimmed
+}
+
+function normalizeReplySubject(subject: string | null | undefined): string {
+  const base = normalizeConversationSubject(subject)
+  return /^re:/i.test(base) ? base : `Re: ${base}`
 }
 
 function extractDomains(addresses: string[]): string[] {
@@ -272,7 +293,7 @@ export async function POST(request: Request) {
   const { data: inboxes, error: inboxesError } = await admin
     .from("inboxes")
     .select(
-      "id, organization_id, agent_id, from_email, reply_to_email, domain, is_default, created_at"
+      "id, organization_id, agent_id, from_name, from_email, reply_to_email, domain, domain_status, is_default, created_at"
     )
 
   if (inboxesError || !inboxes) {
@@ -352,6 +373,15 @@ export async function POST(request: Request) {
 
   const bodyHtml = receivedEmail?.html ?? null
 
+  const { data: organizationSettings } = await admin
+    .from("organization_settings")
+    .select("default_ai_mode, reply_style, company_summary")
+    .eq("organization_id", organizationId)
+    .maybeSingle()
+
+  const typedOrganizationSettings = (organizationSettings ?? null) as OrganizationSettingsRow | null
+  const automationEnabled = isAutomationActive(typedOrganizationSettings?.default_ai_mode)
+
   const { data: duplicateMessage } = await admin
     .from("messages")
     .select("id")
@@ -412,6 +442,8 @@ export async function POST(request: Request) {
 
   let conversationId: string | null = null
   let conversationAgentId: string | null = null
+  let conversationAiMode: "draft" | "auto" = "draft"
+  let repliesPaused = false
 
   const threadLookupKeys = Array.from(new Set([inReplyTo, ...references].filter(Boolean)))
 
@@ -462,7 +494,7 @@ export async function POST(request: Request) {
   if (!conversationId) {
     const { data: fallbackConversation } = await admin
       .from("conversations")
-      .select("id, agent_id, subject")
+      .select("id, agent_id, subject, ai_mode, replies_paused")
       .eq("organization_id", organizationId)
       .eq("inbox_id", inbox.id)
       .eq("contact_id", contactId)
@@ -476,6 +508,8 @@ export async function POST(request: Request) {
       const typedConversation = fallbackConversation as ConversationRecord
       conversationId = typedConversation.id
       conversationAgentId = typedConversation.agent_id
+      conversationAiMode = typedConversation.ai_mode
+      repliesPaused = typedConversation.replies_paused
     }
   }
 
@@ -492,10 +526,11 @@ export async function POST(request: Request) {
         subject: normalizeConversationSubject(receivedEmail?.subject ?? event.data?.subject),
         channel: "email",
         status: "open",
+        ai_mode: automationEnabled ? "auto" : "draft",
         started_at: occurredAt,
         last_message_at: occurredAt,
       })
-      .select("id, agent_id")
+      .select("id, agent_id, ai_mode, replies_paused")
       .single()
 
     if (createConversationError || !createdConversation) {
@@ -509,6 +544,27 @@ export async function POST(request: Request) {
 
     conversationId = createdConversation.id
     conversationAgentId = createdConversation.agent_id
+    conversationAiMode = createdConversation.ai_mode
+    repliesPaused = createdConversation.replies_paused
+  }
+
+  if (conversationId && !conversationAgentId) {
+    const { data: resolvedConversation } = await admin
+      .from("conversations")
+      .select("id, agent_id, ai_mode, replies_paused")
+      .eq("organization_id", organizationId)
+      .eq("id", conversationId)
+      .maybeSingle()
+
+    if (resolvedConversation) {
+      const typedConversation = resolvedConversation as Pick<
+        ConversationRecord,
+        "id" | "agent_id" | "ai_mode" | "replies_paused"
+      >
+      conversationAgentId = typedConversation.agent_id
+      conversationAiMode = typedConversation.ai_mode
+      repliesPaused = typedConversation.replies_paused
+    }
   }
 
   const { data: insertedMessage, error: insertMessageError } = await admin
@@ -562,6 +618,115 @@ export async function POST(request: Request) {
       organizationId,
       conversationId,
     })
+  }
+
+  const canAttemptAutoReply =
+    Boolean(resendApiKey) &&
+    automationEnabled &&
+    conversationAiMode === "auto" &&
+    !repliesPaused &&
+    inbox.domain_status === "verified" &&
+    senderEmail.toLowerCase() !== inbox.from_email.toLowerCase()
+
+  if (canAttemptAutoReply && conversationId) {
+    try {
+      const dayStartUtc = new Date()
+      dayStartUtc.setUTCHours(0, 0, 0, 0)
+
+      const { count: sentTodayCount } = await admin
+        .from("messages")
+        .select("id", { count: "exact", head: true })
+        .eq("organization_id", organizationId)
+        .eq("direction", "outbound")
+        .eq("metadata->>origin", "automation")
+        .gte("created_at", dayStartUtc.toISOString())
+
+      if ((sentTodayCount ?? 0) < AUTOMATION_DAILY_SEND_LIMIT) {
+        const replySubject = normalizeReplySubject(receivedEmail?.subject ?? event.data?.subject)
+        const senderName = parseDisplayName(senderRaw)
+        const replyText = buildBasicAutoReplyText({
+          senderName,
+          organizationName: "Mailee",
+          replyStyle: typedOrganizationSettings?.reply_style ?? null,
+          companySummary: typedOrganizationSettings?.company_summary ?? null,
+        })
+
+        const threadReference = inboundMessageIdHeader ?? normalizeMessageId(event.data?.message_id)
+        const threadedReferences = Array.from(
+          new Set(
+            [...references, ...(inReplyTo ? [inReplyTo] : []), ...(threadReference ? [threadReference] : [])].filter(
+              (entry): entry is string => Boolean(entry)
+            )
+          )
+        )
+        const headers: Record<string, string> = {}
+
+        if (threadReference) {
+          headers["In-Reply-To"] = threadReference
+        }
+
+        if (threadedReferences.length > 0) {
+          headers.References = threadedReferences.join(" ")
+        }
+
+        const fromHeader = inbox.from_name
+          ? `${inbox.from_name} <${inbox.from_email}>`
+          : inbox.from_email
+
+        const sentEmail = await sendEmailWithResend({
+          apiKey: resendApiKey as string,
+          from: fromHeader,
+          to: [senderEmail],
+          subject: replySubject,
+          text: replyText,
+          headers,
+          replyTo: inbox.reply_to_email ? [inbox.reply_to_email] : undefined,
+        })
+
+        const autoReplySentAt = new Date().toISOString()
+
+        const { error: autoReplyPersistError } = await admin.from("messages").insert({
+          organization_id: organizationId,
+          conversation_id: conversationId,
+          contact_id: contactId,
+          agent_id: conversationAgentId,
+          direction: "outbound",
+          provider_message_id: sentEmail.id,
+          body_text: replyText,
+          in_reply_to: threadReference,
+          references: threadedReferences,
+          metadata: {
+            provider: "resend",
+            origin: "automation",
+            automation_kind: "inbound_auto_reply",
+            in_response_to_message_id: (insertedMessage as MessageRecord).id,
+          },
+          sent_at: autoReplySentAt,
+        })
+
+        if (autoReplyPersistError) {
+          console.error("[api/webhooks/resend] Failed to persist auto reply message", {
+            error: autoReplyPersistError,
+            organizationId,
+            conversationId,
+          })
+        } else {
+          await admin
+            .from("conversations")
+            .update({
+              last_message_at: autoReplySentAt,
+            })
+            .eq("id", conversationId)
+            .eq("organization_id", organizationId)
+        }
+      }
+    } catch (autoReplyError) {
+      console.error("[api/webhooks/resend] Auto reply flow failed", {
+        error: autoReplyError,
+        organizationId,
+        conversationId,
+      })
+    }
   }
 
   return jsonReply({

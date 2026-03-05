@@ -521,3 +521,45 @@ export async function syncResendWebhookAction() {
     redirectWithNotice("error", `Unable to sync inbound routing: ${message}`, "connect")
   }
 }
+
+export async function saveAutomationModeAction(formData: FormData) {
+  try {
+    const { supabase, organization } = await getDashboardContext()
+    const mode = String(formData.get("default_ai_mode") ?? "draft")
+      .trim()
+      .toLowerCase()
+
+    if (!["draft", "auto"].includes(mode)) {
+      redirectWithNotice("error", "Invalid automation mode.")
+    }
+
+    const { error } = await supabase.from("organization_settings").upsert(
+      {
+        organization_id: organization.id,
+        default_ai_mode: mode,
+      },
+      {
+        onConflict: "organization_id",
+      }
+    )
+
+    if (error) {
+      redirectWithNotice("error", `Unable to update automation mode: ${error.message}`)
+    }
+
+    revalidatePath("/dashboard/email")
+    redirectWithNotice(
+      "success",
+      mode === "auto"
+        ? "Automation is active. New inbound emails can receive automatic replies."
+        : "Automation paused. Inbound emails will be stored without auto-replies."
+    )
+  } catch (error) {
+    if (isRedirectError(error)) {
+      throw error
+    }
+
+    const message = error instanceof Error ? error.message : "Unknown error"
+    redirectWithNotice("error", `Unable to update automation mode: ${message}`)
+  }
+}

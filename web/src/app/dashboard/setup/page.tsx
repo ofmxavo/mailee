@@ -19,10 +19,12 @@ import {
   type DnsRequirementStatus,
 } from "@/lib/dns-diagnostics"
 import { getResendApiKey, getResendWebhookSecret } from "@/lib/env"
+import { AUTOMATION_DAILY_SEND_LIMIT, isAutomationActive } from "@/lib/automation"
 import { findResendDomainByName, type ResendDomain } from "@/lib/resend"
 
 import {
   refreshResendDomainStatusAction,
+  saveAutomationModeAction,
   saveSetupConfigAction,
   syncResendDomainAction,
   syncResendWebhookAction,
@@ -46,6 +48,7 @@ type InboxConfigRow = {
 
 type OrganizationSettingsRow = {
   website_url: string | null
+  default_ai_mode: "draft" | "auto" | null
 }
 
 function getStatusLabel(active: boolean): "default" | "secondary" | "outline" {
@@ -189,7 +192,7 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
       .maybeSingle(),
     supabase
       .from("organization_settings")
-      .select("website_url")
+      .select("website_url, default_ai_mode")
       .eq("organization_id", organization.id)
       .maybeSingle(),
   ])
@@ -201,6 +204,7 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
   const resolvedDomain = toSendingDomain(inbox?.domain ?? deriveDomainFromEmail(inbox?.from_email))
   const senderLocalPart = deriveLocalPartFromEmail(inbox?.from_email) ?? "support"
   const domainReady = Boolean(resolvedDomain)
+  const automationActive = isAutomationActive(settings?.default_ai_mode)
 
   const serviceConfigured = Boolean(getResendApiKey())
   const webhookSecretConfigured = Boolean(getResendWebhookSecret())
@@ -352,6 +356,35 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
           </CardContent>
         </Card>
       </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Automation</CardTitle>
+          <CardDescription>
+            Turn automatic replies on or off for inbound emails from this inbox.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex items-center justify-between rounded-md border bg-background px-3 py-2">
+            <span>Automation status</span>
+            <Badge variant={automationActive ? "default" : "outline"}>
+              {automationActive ? "active" : "paused"}
+            </Badge>
+          </div>
+          <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            Safety cap: up to {AUTOMATION_DAILY_SEND_LIMIT} automated emails/day per workspace.
+            Outbound still requires verified sending domain and Resend configuration.
+          </div>
+          <form action={saveAutomationModeAction}>
+            <input type="hidden" name="default_ai_mode" value={automationActive ? "draft" : "auto"} />
+            <FormSubmitButton
+              idleLabel={automationActive ? "Pause automation" : "Activate automation"}
+              loadingLabel={automationActive ? "Pausing..." : "Activating..."}
+              variant="outline"
+            />
+          </form>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
