@@ -145,6 +145,24 @@ function resolveRecordHost(domainName: string, recordName: string): string {
     return normalizedRecord
   }
 
+  const domainLabels = normalizedDomain.split(".").filter(Boolean)
+
+  if (domainLabels.length >= 2) {
+    const apexDomain = domainLabels.slice(-2).join(".")
+    const relativeDomain = domainLabels.slice(0, -2).join(".")
+
+    if (normalizedRecord === apexDomain || normalizedRecord.endsWith(`.${apexDomain}`)) {
+      return normalizedRecord
+    }
+
+    if (
+      relativeDomain &&
+      (normalizedRecord === relativeDomain || normalizedRecord.endsWith(`.${relativeDomain}`))
+    ) {
+      return `${normalizedRecord}.${apexDomain}`
+    }
+  }
+
   return `${normalizedRecord}.${normalizedDomain}`
 }
 
@@ -454,8 +472,10 @@ export default async function SetupPage({ searchParams }: SetupPageProps) {
                       </p>
                       <ul className="list-disc space-y-1 pl-4">
                         {missingRequiredDns.map((entry, index) => (
-                          <li key={`${entry.type}-${entry.host}-${index}`}>
-                            <code>{entry.type}</code> <code>{entry.host}</code> {"->"}{" "}<code>{entry.value}</code>
+                          <li key={`${entry.type}-${entry.host}-${index}`} className="break-all">
+                            <code className="break-all">{entry.type}</code>{" "}
+                            <code className="break-all">{entry.host}</code> {"->"}{" "}
+                            <code className="break-all">{entry.value}</code>
                             {entry.priority ? ` (priority ${entry.priority})` : ""}
                           </li>
                         ))}

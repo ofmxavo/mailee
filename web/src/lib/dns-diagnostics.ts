@@ -55,7 +55,7 @@ function resolveRecordHost(domain: string, name: string): string {
   const normalizedDomain = normalizeHostName(domain)
   const normalizedName = name.trim()
 
-  if (!normalizedName) {
+  if (!normalizedName || normalizedName === "@") {
     return normalizedDomain
   }
 
@@ -63,6 +63,24 @@ function resolveRecordHost(domain: string, name: string): string {
 
   if (candidate === normalizedDomain || candidate.endsWith(`.${normalizedDomain}`)) {
     return candidate
+  }
+
+  const domainLabels = normalizedDomain.split(".").filter(Boolean)
+
+  if (domainLabels.length >= 2) {
+    const apexDomain = domainLabels.slice(-2).join(".")
+    const relativeDomain = domainLabels.slice(0, -2).join(".")
+
+    if (candidate === apexDomain || candidate.endsWith(`.${apexDomain}`)) {
+      return candidate
+    }
+
+    if (
+      relativeDomain &&
+      (candidate === relativeDomain || candidate.endsWith(`.${relativeDomain}`))
+    ) {
+      return normalizeHostName(`${candidate}.${apexDomain}`)
+    }
   }
 
   return normalizeHostName(`${candidate}.${normalizedDomain}`)
